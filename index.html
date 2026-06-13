@@ -11,34 +11,36 @@ html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden;
 #wrap{display:flex;flex-direction:column;height:100dvh}
 #screen{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;padding:4px;overflow:hidden}
 canvas{image-rendering:pixelated;image-rendering:crisp-edges;background:#000}
-#pad{display:flex;justify-content:space-between;align-items:center;
-  padding:8px 16px calc(12px + env(safe-area-inset-bottom));flex:0 0 auto}
-.cluster{display:flex;gap:14px}
-.btn{width:62px;height:62px;border-radius:50%;background:#1a1a2e;border:2px solid #4a4a7a;
-  color:#8ab4ff;font:bold 24px/1 sans-serif;display:flex;align-items:center;justify-content:center;
-  touch-action:none}
-.btn.jump{width:84px;height:84px;color:#ffd166;border-color:#7a6a3a;font-size:16px}
-.btn.on{background:#3a3a6e;border-color:#8ab4ff}
-.btn.jump.on{background:#5a4a1e;border-color:#ffd166}
-@media (orientation:landscape){
-  #wrap{flex-direction:row}
-  #pad{flex-direction:column-reverse;justify-content:space-between;padding:16px}
-  .cluster{flex-direction:column}
-}
+/* バーチャルスティック＆ジャンプ波紋（画面ぜんたいがタッチエリア） */
+#stick{position:fixed;width:88px;height:88px;border-radius:50%;
+  border:2px solid rgba(138,180,255,.55);background:rgba(138,180,255,.08);
+  display:none;pointer-events:none;z-index:20}
+#knob{position:fixed;width:34px;height:34px;border-radius:50%;
+  background:rgba(138,180,255,.75);box-shadow:0 0 10px rgba(138,180,255,.6);
+  display:none;pointer-events:none;z-index:21}
+#jumpfx{position:fixed;width:64px;height:64px;border-radius:50%;
+  border:3px solid rgba(255,209,102,.85);opacity:0;pointer-events:none;z-index:20}
+#jumpfx.anim{animation:jfx .35s ease-out}
+@keyframes jfx{0%{transform:scale(.4);opacity:.9}100%{transform:scale(1.25);opacity:0}}
+#zones{position:fixed;inset:0;display:flex;pointer-events:none;z-index:15;
+  opacity:0;transition:opacity .4s}
+#zones.show{opacity:1}
+#zones div{flex:1;display:flex;align-items:flex-end;justify-content:center;
+  padding-bottom:calc(48px + env(safe-area-inset-bottom));
+  color:rgba(255,255,255,.45);font:bold 13px/1.6 sans-serif;text-align:center}
+#zones div:first-child{border-right:1px dashed rgba(255,255,255,.15)}
 </style>
 </head>
 <body>
 <div id="wrap">
   <div id="screen"><canvas id="cv" width="256" height="240"></canvas></div>
-  <div id="pad">
-    <div class="cluster">
-      <div class="btn" id="btnL">◀</div>
-      <div class="btn" id="btnR">▶</div>
-    </div>
-    <div class="cluster">
-      <div class="btn jump" id="btnJ">JUMP</div>
-    </div>
-  </div>
+</div>
+<div id="stick"></div>
+<div id="knob"></div>
+<div id="jumpfx"></div>
+<div id="zones">
+  <div>スライドで<br>いどう</div>
+  <div>タップで ジャンプ<br>ながおしで ふわふわ</div>
 </div>
 <script>
 "use strict";
@@ -192,22 +194,79 @@ function setKey(k,v){
 addEventListener("keydown",e=>{setKey(e.key,true);if([" ","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(e.key))e.preventDefault();});
 addEventListener("keyup",e=>setKey(e.key,false));
 
-function bindBtn(id,prop){
-  const el=document.getElementById(id);
-  const on=e=>{e.preventDefault();
-    if(prop==="jump"&&!input.jump)jumpEdge=true;
-    input[prop]=true;anyTap=true;el.classList.add("on");initAudio();};
-  const off=e=>{e.preventDefault();input[prop]=false;el.classList.remove("on");};
-  el.addEventListener("touchstart",on,{passive:false});
-  el.addEventListener("touchend",off,{passive:false});
-  el.addEventListener("touchcancel",off,{passive:false});
-  el.addEventListener("mousedown",on);
-  el.addEventListener("mouseup",off);
-  el.addEventListener("mouseleave",off);
+// ---- 全画面タッチ操作 ----
+// 左半分: タッチしてスライド＝バーチャルスティック移動
+// 右半分(または2本目の指): タップ＝ジャンプ、おしっぱなし＝ふわふわ
+const stickEl=document.getElementById("stick");
+const knobEl=document.getElementById("knob");
+const jumpfxEl=document.getElementById("jumpfx");
+const zonesEl=document.getElementById("zones");
+let moveId=null, jumpId=null, originX=0, originY=0;
+const DEAD=8, FOLLOW=34, KNOB_MAX=34;
+
+function posStick(x){
+  stickEl.style.left=(originX-44)+"px"; stickEl.style.top=(originY-44)+"px";
+  const dx=Math.max(-KNOB_MAX,Math.min(KNOB_MAX,x-originX));
+  knobEl.style.left=(originX+dx-17)+"px"; knobEl.style.top=(originY-17)+"px";
 }
-bindBtn("btnL","left"); bindBtn("btnR","right"); bindBtn("btnJ","jump");
-cv.addEventListener("touchstart",e=>{e.preventDefault();anyTap=true;initAudio();},{passive:false});
-cv.addEventListener("mousedown",()=>{anyTap=true;initAudio();});
+function moveStart(id,x,y){
+  moveId=id; originX=x; originY=y;
+  stickEl.style.display="block"; knobEl.style.display="block";
+  posStick(x);
+}
+function moveUpdate(x){
+  let dx=x-originX;
+  // スティック原点が指を追いかける＝すばやい切り返しに対応
+  if(dx>FOLLOW){originX=x-FOLLOW;dx=FOLLOW;}
+  if(dx<-FOLLOW){originX=x+FOLLOW;dx=-FOLLOW;}
+  input.left=dx<-DEAD; input.right=dx>DEAD;
+  posStick(x);
+}
+function moveEnd(){
+  moveId=null; input.left=input.right=false;
+  stickEl.style.display="none"; knobEl.style.display="none";
+}
+function jumpStart(id,x,y){
+  jumpId=id;
+  if(!input.jump)jumpEdge=true;
+  input.jump=true;
+  jumpfxEl.style.left=(x-32)+"px"; jumpfxEl.style.top=(y-32)+"px";
+  jumpfxEl.classList.remove("anim"); void jumpfxEl.offsetWidth; jumpfxEl.classList.add("anim");
+}
+function jumpEnd(){ jumpId=null; input.jump=false; }
+
+addEventListener("touchstart",e=>{
+  e.preventDefault(); initAudio(); anyTap=true;
+  for(const t of e.changedTouches){
+    if(t.clientX<innerWidth/2 && moveId===null) moveStart(t.identifier,t.clientX,t.clientY);
+    else if(jumpId===null) jumpStart(t.identifier,t.clientX,t.clientY);
+  }
+},{passive:false});
+addEventListener("touchmove",e=>{
+  e.preventDefault();
+  for(const t of e.changedTouches) if(t.identifier===moveId) moveUpdate(t.clientX);
+},{passive:false});
+function touchDone(e){
+  for(const t of e.changedTouches){
+    if(t.identifier===moveId) moveEnd();
+    if(t.identifier===jumpId) jumpEnd();
+  }
+}
+addEventListener("touchend",touchDone);
+addEventListener("touchcancel",touchDone);
+
+// マウス（PC確認用フォールバック）
+let mouseMode=null;
+addEventListener("mousedown",e=>{
+  initAudio(); anyTap=true;
+  if(e.clientX<innerWidth/2){mouseMode="move";moveStart("m",e.clientX,e.clientY);}
+  else{mouseMode="jump";jumpStart("m",e.clientX,e.clientY);}
+});
+addEventListener("mousemove",e=>{ if(mouseMode==="move")moveUpdate(e.clientX); });
+addEventListener("mouseup",()=>{
+  if(mouseMode==="move")moveEnd(); else if(mouseMode==="jump")jumpEnd();
+  mouseMode=null;
+});
 
 //================ サウンド ================
 let AC=null;
@@ -272,10 +331,11 @@ function overlap(a,b,pad){
 }
 
 //================ プレイヤー更新 ================
-const GRAV=0.07, MAXFALL=1.4, MOVE=1.1, ACC=0.12, AIRACC=0.045, JUMP=2.0, LIFT=0.115, LIFT_MAX=24;
+const GRAV=0.07, MAXFALL=1.4, MOVE=1.1, ACC=0.12, AIRACC=0.09, AIRTURN=2.2, JUMP=2.0, LIFT=0.115, LIFT_MAX=24;
 function updatePlayer(p){
-  // 横移動（空中では効きにくい＝カイの冒険らしい慣性）
-  const acc=p.onGround?ACC:AIRACC;
+  // 横移動（空中はやや弱め＋逆方向への切り返しは強めに補助）
+  let acc=p.onGround?ACC:AIRACC;
+  if(!p.onGround&&((input.left&&p.vx>0)||(input.right&&p.vx<0)))acc*=AIRTURN;
   if(input.left){p.vx-=acc;p.face=-1;}
   else if(input.right){p.vx+=acc;p.face=1;}
   else if(p.onGround){p.vx*=0.75;if(Math.abs(p.vx)<0.05)p.vx=0;}
@@ -501,9 +561,10 @@ function drawTitle(){
   ctx.fillRect(108,30,40,14);
   text("塔の少女 KAI",W/2,86,"#ffd166",20,"center");
   text("- カイの冒険風アクション -",W/2,104,"#8ab4ff",9,"center");
-  text("カギを とって トビラへ いそげ!",W/2,140,"#fff",9,"center");
-  text("ジャンプ おしっぱなしで",W/2,158,"#aaa",8,"center");
-  text("ふわふわ うかぶよ",W/2,170,"#aaa",8,"center");
+  text("カギを とって トビラへ いそげ!",W/2,138,"#fff",9,"center");
+  text("ひだり半分: スライドで いどう",W/2,156,"#aaa",8,"center");
+  text("みぎ半分: タップで ジャンプ",W/2,168,"#aaa",8,"center");
+  text("ながおしで ふわふわ うかぶよ",W/2,180,"#ffd166",8,"center");
   if(frame%60<36)text("TAP TO START",W/2,200,"#fff",11,"center");
   text("HI-SCORE "+hiscore,W/2,224,"#666",8,"center");
 }
@@ -535,9 +596,9 @@ function draw(){
     text("ROUND CLEAR!",W/2,118,"#ffd166",13,"center");
     text("TIME BONUS +"+Math.floor(timer/60)*10,W/2,132,"#fff",8,"center");
   }
-  if(state==="play"&&frame<90&&round===0){
-    text("← → いどう / JUMP ながおし",W/2,228,"#fff",8,"center");
-  }
+  // 最初のラウンドだけ画面に操作ゾーンのガイドを重ねる
+  if(state==="play"&&round===0&&frame<300) zonesEl.classList.add("show");
+  else zonesEl.classList.remove("show");
 }
 
 //================ ループ ================
