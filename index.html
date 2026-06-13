@@ -181,7 +181,18 @@ const TIME_LIMIT=60*60; // 60秒
 
 //================ 入力 ================
 const input={left:false,right:false,jump:false};
-let jumpEdge=false, anyTap=false;
+let jumpEdge=false, anyTap=false, tapPos=null;
+// 画面座標→キャンバス座標（GAME OVER画面のボタン判定用）
+function canvasPos(cx,cy){
+  const r=cv.getBoundingClientRect();
+  return {x:(cx-r.left)*W/r.width, y:(cy-r.top)*H/r.height};
+}
+function inRect(p,r){
+  const PAD=8; // 指の太さぶん当たりを広めに
+  return p.x>=r.x-PAD&&p.x<=r.x+r.w+PAD&&p.y>=r.y-PAD&&p.y<=r.y+r.h+PAD;
+}
+const BTN_CONT={x:48,y:148,w:160,h:28};
+const BTN_TITLE={x:48,y:188,w:160,h:28};
 function setKey(k,v){
   if(k==="ArrowLeft"||k==="a")input.left=v;
   else if(k==="ArrowRight"||k==="d")input.right=v;
@@ -237,6 +248,8 @@ function jumpEnd(){ jumpId=null; input.jump=false; }
 
 addEventListener("touchstart",e=>{
   e.preventDefault(); initAudio(); anyTap=true;
+  const t0=e.changedTouches[0];
+  if(t0)tapPos=canvasPos(t0.clientX,t0.clientY);
   for(const t of e.changedTouches){
     if(t.clientX<innerWidth/2 && moveId===null) moveStart(t.identifier,t.clientX,t.clientY);
     else if(jumpId===null) jumpStart(t.identifier,t.clientX,t.clientY);
@@ -259,6 +272,7 @@ addEventListener("touchcancel",touchDone);
 let mouseMode=null;
 addEventListener("mousedown",e=>{
   initAudio(); anyTap=true;
+  tapPos=canvasPos(e.clientX,e.clientY);
   if(e.clientX<innerWidth/2){mouseMode="move";moveStart("m",e.clientX,e.clientY);}
   else{mouseMode="jump";jumpStart("m",e.clientX,e.clientY);}
 });
@@ -439,11 +453,21 @@ function update(){
       if(round>=LEVELS.length){state="ending";stateT=0;hiscore=Math.max(hiscore,score);}
       else{loadLevel(round);state="play";}
     }
-  }else if(state==="over"||state==="ending"){
+  }else if(state==="over"){
+    stateT++;
+    if(stateT>30){
+      if(anyTap&&tapPos){
+        if(inRect(tapPos,BTN_CONT)){lives=3;loadLevel(round);state="play";sfx.door();}
+        else if(inRect(tapPos,BTN_TITLE)){state="title";frame=0;}
+      }else if(jumpEdge){ // キーボード用: ジャンプキーでコンティニュー
+        lives=3;loadLevel(round);state="play";sfx.door();
+      }
+    }
+  }else if(state==="ending"){
     stateT++;
     if(anyTap&&stateT>60){state="title";frame=0;}
   }
-  anyTap=false;jumpEdge=false;
+  anyTap=false;jumpEdge=false;tapPos=null;
 }
 
 //================ 描画 ================
@@ -532,6 +556,12 @@ function drawKeyDoor(){
     px(x+4,y+2,5,2,"#ffd020");px(x+7,y+3,2,2,"#ffd020");
   }
 }
+function drawButton(r,label,hl){
+  px(r.x,r.y,r.w,r.h,hl?"#2a3c6e":"#16203e");
+  ctx.strokeStyle=hl?"#ffd166":"#4a5a8a";
+  ctx.strokeRect(r.x+0.5,r.y+0.5,r.w-1,r.h-1);
+  text(label,r.x+r.w/2,r.y+r.h/2+3,"#fff",9,"center");
+}
 function text(s,x,y,c,size,align){
   ctx.fillStyle=c||"#fff";
   ctx.font=(size||8)+"px monospace";
@@ -572,10 +602,13 @@ function draw(){
   px(0,0,W,H,"#000");
   if(state==="title"){drawTitle();return;}
   if(state==="over"){
-    text("GAME OVER",W/2,100,"#ff5050",18,"center");
-    text("SCORE "+score,W/2,130,"#fff",10,"center");
-    text("HI-SCORE "+hiscore,W/2,148,"#ffd166",10,"center");
-    if(stateT>60&&frame%60<36)text("TAP TO TITLE",W/2,190,"#aaa",9,"center");
+    text("GAME OVER",W/2,76,"#ff5050",18,"center");
+    text("SCORE "+score,W/2,102,"#fff",10,"center");
+    text("HI-SCORE "+hiscore,W/2,118,"#ffd166",10,"center");
+    if(stateT>30){
+      drawButton(BTN_CONT,"CONTINUE - ROUND "+(round+1),frame%60<30);
+      drawButton(BTN_TITLE,"TITLE",false);
+    }
     return;
   }
   if(state==="ending"){
