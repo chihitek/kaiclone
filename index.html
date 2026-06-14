@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>塔の少女KAI 〜カイの冒険風アクション〜</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap" rel="stylesheet">
 <style>
 html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden;
   touch-action:none;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
@@ -27,7 +30,7 @@ canvas{image-rendering:pixelated;image-rendering:crisp-edges;background:#000}
 #zones.show{opacity:1}
 #zones div{flex:1;display:flex;align-items:flex-end;justify-content:center;
   padding-bottom:calc(48px + env(safe-area-inset-bottom));
-  color:rgba(255,255,255,.45);font:bold 13px/1.6 sans-serif;text-align:center}
+  color:rgba(255,255,255,.45);font:13px/1.6 "DotGothic16",sans-serif;text-align:center}
 #zones div:first-child{border-right:1px dashed rgba(255,255,255,.15)}
 </style>
 </head>
@@ -49,6 +52,10 @@ const TILE=16, COLS=16, ROWS=13, HUD=32;
 const W=256, H=240;
 const cv=document.getElementById("cv"), ctx=cv.getContext("2d");
 ctx.imageSmoothingEnabled=false;
+// DotGothic16 を先読み（canvas は読込前だと monospace にフォールバックするため）
+if(document.fonts&&document.fonts.load){
+  document.fonts.load('16px "DotGothic16"').catch(()=>{});
+}
 
 function fitCanvas(){
   const box=document.getElementById("screen");
@@ -193,6 +200,8 @@ function inRect(p,r){
 }
 const BTN_CONT={x:48,y:148,w:160,h:28};
 const BTN_TITLE={x:48,y:188,w:160,h:28};
+const BTN_NORMAL={x:28,y:182,w:92,h:28};
+const BTN_ENDLESS={x:136,y:182,w:92,h:28};
 function setKey(k,v){
   if(k==="ArrowLeft"||k==="a")input.left=v;
   else if(k==="ArrowRight"||k==="d")input.right=v;
@@ -307,10 +316,112 @@ const sfx={
 let state="title"; // title / play / dying / clear / over / ending
 let round=0, score=0, hiscore=0, lives=3, timer=0, stateT=0;
 let map=[], player=null, enemies=[], keyObj=null, door=null, hasKey=false;
-let frame=0;
+let frame=0, mode="normal"; // normal: 手作り8面 / endless: 自動生成
+
+//================ ステージ自動生成（A案: 到達性保証つき） ================
+// 下から上へ「ジャンプで届く間隔」の足場チェーンを作り、P/鍵/扉をその上に置く。
+// 最後に BFS で「開始→鍵→扉」が全て到達可能か検証し、ダメなら作り直す＝詰みゼロ。
+const REACH_UP=4, REACH_H=4; // 到達判定（保守的: 上方向4タイル・横4タイルまで）
+function gSolid(ch){return ch==="#"||ch==="=";}
+function gNewGrid(){
+  const g=[];
+  for(let y=0;y<ROWS;y++){
+    const row=[];
+    for(let x=0;x<COLS;x++) row.push((x===0||x===COLS-1||y===0||y===ROWS-1)?"#":".");
+    g.push(row);
+  }
+  return g;
+}
+function gStanding(g,r,c){ // そのセルに立てるか（足元が固体）
+  if(r<1||r>=ROWS-1||c<1||c>=COLS-1) return false;
+  if(gSolid(g[r][c])) return false;
+  return gSolid(g[r+1][c]);
+}
+function gReach(a,b){
+  const dy=a.r-b.r, dx=Math.abs(a.c-b.c);
+  if(dy>=0) return dy<=REACH_UP && dx<=REACH_H;   // 同高〜上り
+  return dx<=REACH_H+(-dy);                        // 下り（落下中は横に流れる）
+}
+function gVerify(g){
+  let P=null,K=null,D=null;
+  for(let r=0;r<ROWS;r++)for(let c=0;c<COLS;c++){
+    const ch=g[r][c];
+    if(ch==="P")P={r,c};else if(ch==="K")K={r,c};else if(ch==="D")D={r,c};
+  }
+  if(!P||!K||!D) return false;
+  if(!gStanding(g,P.r,P.c)||!gStanding(g,K.r,K.c)||!gStanding(g,D.r,D.c)) return false;
+  const stand=[];
+  for(let r=1;r<ROWS-1;r++)for(let c=1;c<COLS-1;c++) if(gStanding(g,r,c)) stand.push({r,c});
+  const key=p=>p.r*COLS+p.c;
+  const seen=new Set([key(P)]), q=[P];
+  while(q.length){
+    const cur=q.shift();
+    for(const s of stand){
+      if(seen.has(key(s))) continue;
+      if(gReach(cur,s)){ seen.add(key(s)); q.push(s); }
+    }
+  }
+  return seen.has(key(K)) && seen.has(key(D));
+}
+function gPlatform(g,r,c,len){ for(let i=0;i<len&&c+i<COLS-1;i++) g[r][c+i]="="; }
+function generateLevel(round){
+  const df=Math.min(round,12); // 難易度（12で頭打ち）
+  for(let attempt=0;attempt<300;attempt++){
+    const g=gNewGrid();
+    const spacing = df>=8?3:2;                          // 段の高低差
+    const minLen = Math.max(2,4-Math.floor(df/4));      // 高難度ほど足場が短い
+    const maxLen = Math.max(minLen,5-Math.floor(df/4));
+    // 下から段を積む
+    const tiers=[];
+    for(let r=ROWS-2;r>=2&&tiers.length<6;r-=spacing) tiers.push(r);
+    // 各段に足場を配置（前段から REACH_H 以内に寄せる＝連結を保証）
+    const plats=[]; let prevC=1+Math.floor(Math.random()*6);
+    for(let i=0;i<tiers.length;i++){
+      const len=minLen+Math.floor(Math.random()*(maxLen-minLen+1));
+      let c;
+      if(i===0){ c=1+Math.floor(Math.random()*Math.max(1,COLS-2-len)); }
+      else{
+        const lo=Math.max(1,prevC-REACH_H), hi=Math.min(COLS-1-len,prevC+REACH_H);
+        c = lo>=hi?lo:lo+Math.floor(Math.random()*(hi-lo+1));
+      }
+      gPlatform(g,tiers[i],c,len);
+      plats.push({r:tiers[i],c,len}); prevC=c;
+    }
+    // P / 鍵 / 扉 を足場中央の上に
+    const standOf=p=>({r:p.r-1,c:p.c+Math.floor(p.len/2)});
+    const ps=standOf(plats[0]);
+    const ks=standOf(plats[Math.max(1,Math.floor(plats.length/2))]);
+    const ds=standOf(plats[plats.length-1]);
+    g[ps.r][ps.c]="P"; g[ks.r][ks.c]="K"; g[ds.r][ds.c]="D";
+    // 敵配置（ラウンドでスケール）
+    const nEnemies=Math.min(1+Math.floor(round/2),7);
+    const used=new Set([ps.r*COLS+ps.c,ks.r*COLS+ks.c,ds.r*COLS+ds.c]);
+    let placed=0,guard=0;
+    while(placed<nEnemies&&guard++<200){
+      const roll=Math.random();
+      let type = (df>=4&&roll<0.3)?"c" : (df>=2&&roll<0.6)?"b" : "a";
+      if(type==="a"){ // スライムは足場上
+        const pl=plats[1+Math.floor(Math.random()*(plats.length-1))];
+        const sc={r:pl.r-1,c:pl.c+Math.floor(Math.random()*pl.len)};
+        const k=sc.r*COLS+sc.c;
+        if(used.has(k)||!gStanding(g,sc.r,sc.c)) continue;
+        if(Math.abs(sc.r-ps.r)+Math.abs(sc.c-ps.c)<3) continue; // 開始位置から離す
+        g[sc.r][sc.c]="a"; used.add(k); placed++;
+      }else{ // バット/ウィスプは空中
+        const ar=2+Math.floor(Math.random()*(ROWS-4)), ac=2+Math.floor(Math.random()*(COLS-4));
+        const k=ar*COLS+ac;
+        if(used.has(k)||g[ar][ac]!==".") continue;
+        if(Math.abs(ar-ps.r)+Math.abs(ac-ps.c)<4) continue;
+        g[ar][ac]=type; used.add(k); placed++;
+      }
+    }
+    if(gVerify(g)) return g.map(row=>row.join(""));
+  }
+  return LEVELS[round%LEVELS.length]; // 念のためのフォールバック
+}
 
 function loadLevel(n){
-  const src=LEVELS[n];
+  const src = (mode==="endless") ? generateLevel(n) : LEVELS[n];
   map=src.map(r=>r.split(""));
   enemies=[];keyObj=null;door=null;hasKey=false;timer=TIME_LIMIT;
   for(let y=0;y<ROWS;y++)for(let x=0;x<COLS;x++){
@@ -428,10 +539,16 @@ function killPlayer(){
 }
 
 //================ メイン更新 ================
+function startGame(m){ mode=m; round=0; score=0; lives=3; loadLevel(0); state="play"; frame=0; }
 function update(){
   frame++;
   if(state==="title"){
-    if(anyTap&&frame>30){round=0;score=0;lives=3;loadLevel(0);state="play";frame=0;}
+    if(frame>10){
+      if(anyTap&&tapPos){
+        if(inRect(tapPos,BTN_NORMAL)) startGame("normal");
+        else if(inRect(tapPos,BTN_ENDLESS)) startGame("endless");
+      }else if(jumpEdge){ startGame("normal"); } // キーボード既定
+    }
   }else if(state==="play"){
     timer--;
     if(timer===600||timer===420||timer===240||timer===60)sfx.tick();
@@ -450,8 +567,8 @@ function update(){
     stateT++;
     if(stateT>110){
       round++;
-      if(round>=LEVELS.length){state="ending";stateT=0;hiscore=Math.max(hiscore,score);}
-      else{loadLevel(round);state="play";}
+      if(mode==="normal"&&round>=LEVELS.length){state="ending";stateT=0;hiscore=Math.max(hiscore,score);}
+      else{loadLevel(round);state="play";} // endless は無限に続く
     }
   }else if(state==="over"){
     stateT++;
@@ -564,14 +681,14 @@ function drawButton(r,label,hl){
 }
 function text(s,x,y,c,size,align){
   ctx.fillStyle=c||"#fff";
-  ctx.font=(size||8)+"px monospace";
+  ctx.font=(size||8)+'px "DotGothic16",monospace';
   ctx.textAlign=align||"left";
   ctx.fillText(s,x,y);
   ctx.textAlign="left";
 }
 function drawHUD(){
   px(0,0,W,HUD,"#101018");
-  text("ROUND "+(round+1),6,12,"#8ab4ff",8);
+  text((mode==="endless"?"ENDLESS ":"ROUND ")+(round+1),6,12,"#8ab4ff",8);
   text("SCORE "+score,6,26,"#fff",8);
   // 残機
   for(let i=0;i<lives;i++){px(96+i*12,18,8,8,"#e858a0");px(97+i*12,16,6,3,"#c84818");}
@@ -591,12 +708,15 @@ function drawTitle(){
   ctx.fillRect(108,30,40,14);
   text("塔の少女 KAI",W/2,86,"#ffd166",20,"center");
   text("- カイの冒険風アクション -",W/2,104,"#8ab4ff",9,"center");
-  text("カギを とって トビラへ いそげ!",W/2,138,"#fff",9,"center");
-  text("ひだり半分: スライドで いどう",W/2,156,"#aaa",8,"center");
-  text("みぎ半分: タップで ジャンプ",W/2,168,"#aaa",8,"center");
-  text("ながおしで ふわふわ うかぶよ",W/2,180,"#ffd166",8,"center");
-  if(frame%60<36)text("TAP TO START",W/2,200,"#fff",11,"center");
-  text("HI-SCORE "+hiscore,W/2,224,"#666",8,"center");
+  text("カギを とって トビラへ いそげ!",W/2,128,"#fff",9,"center");
+  text("ひだり: スライドいどう / みぎ: タップでジャンプ",W/2,146,"#aaa",7,"center");
+  text("ながおしで ふわふわ うかぶよ",W/2,162,"#ffd166",8,"center");
+  // モード選択ボタン
+  drawButton(BTN_NORMAL,"NORMAL",frame%60<30);
+  drawButton(BTN_ENDLESS,"ENDLESS",frame%60<30);
+  text("ぜん8面",BTN_NORMAL.x+BTN_NORMAL.w/2,BTN_NORMAL.y+40,"#777",7,"center");
+  text("むげん自動生成",BTN_ENDLESS.x+BTN_ENDLESS.w/2,BTN_ENDLESS.y+40,"#777",7,"center");
+  text("HI-SCORE "+hiscore,W/2,234,"#666",8,"center");
 }
 function draw(){
   px(0,0,W,H,"#000");
