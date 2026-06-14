@@ -420,8 +420,13 @@ function generateLevel(round){
   return LEVELS[round%LEVELS.length]; // 念のためのフォールバック
 }
 
-function loadLevel(n){
-  const src = (mode==="endless") ? generateLevel(n) : LEVELS[n];
+let endlessSrc=null; // endless: 現ラウンドの生成結果をキャッシュ（やられ・継続では作り直さない）
+function loadLevel(n,regen){
+  let src;
+  if(mode==="endless"){
+    if(regen||!endlessSrc) endlessSrc=generateLevel(n); // 新ラウンド時のみ生成
+    src=endlessSrc;
+  }else src=LEVELS[n];
   map=src.map(r=>r.split(""));
   enemies=[];keyObj=null;door=null;hasKey=false;timer=TIME_LIMIT;
   for(let y=0;y<ROWS;y++)for(let x=0;x<COLS;x++){
@@ -539,7 +544,7 @@ function killPlayer(){
 }
 
 //================ メイン更新 ================
-function startGame(m){ mode=m; round=0; score=0; lives=3; loadLevel(0); state="play"; frame=0; }
+function startGame(m){ mode=m; round=0; score=0; lives=3; loadLevel(0,true); state="play"; frame=0; }
 function update(){
   frame++;
   if(state==="title"){
@@ -568,7 +573,7 @@ function update(){
     if(stateT>110){
       round++;
       if(mode==="normal"&&round>=LEVELS.length){state="ending";stateT=0;hiscore=Math.max(hiscore,score);}
-      else{loadLevel(round);state="play";} // endless は無限に続く
+      else{loadLevel(round,true);state="play";} // クリア→次ラウンドは新規生成
     }
   }else if(state==="over"){
     stateT++;
